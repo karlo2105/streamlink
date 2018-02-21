@@ -24,9 +24,13 @@ except ImportError:
 
 
 class LocalizationTestsMixin(object):
-    def test_language_code(self):
+    def test_language_code_us(self):
         l = l10n.Localization("en_US")
         self.assertEqual("en_US", l.language_code)
+
+    def test_language_code_kr(self):
+        l = l10n.Localization("ko_KR")
+        self.assertEqual("ko_KR", l.language_code)
 
     def test_bad_language_code(self):
         self.assertRaises(LookupError, l10n.Localization, "enUS")
@@ -55,6 +59,13 @@ class LocalizationTestsMixin(object):
     @patch("locale.getdefaultlocale")
     def test_default(self, getdefaultlocale):
         getdefaultlocale.return_value = (None, None)
+        l = l10n.Localization()
+        self.assertEqual("en_US", l.language_code)
+        self.assertTrue(l.equivalent(language="en", country="US"))
+
+    @patch("locale.getdefaultlocale")
+    def test_default_invalid(self, getdefaultlocale):
+        getdefaultlocale.return_value = ("en_150", None)
         l = l10n.Localization()
         self.assertEqual("en_US", l.language_code)
         self.assertTrue(l.equivalent(language="en", country="US"))

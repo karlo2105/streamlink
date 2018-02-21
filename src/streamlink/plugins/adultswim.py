@@ -24,7 +24,7 @@ class AdultSwim(Plugin):
     live_schema = validate.Schema({
         u"streams": {
             validate.text: {u"stream": validate.text,
-                            u"isLive": bool,
+                            validate.optional(u"isLive"): bool,
                             u"archiveEpisodes": [{
                                 u"id": validate.text,
                                 u"slug": validate.text,
@@ -71,7 +71,7 @@ class AdultSwim(Plugin):
         mapper = StreamMapper(lambda fmt, strm: strm["url"].endswith(fmt))
         mapper.map(".m3u8", self._make_hls_hds_stream, HLSStream.parse_variant_playlist)
         mapper.map(".f4m", self._make_hls_hds_stream, HDSStream.parse_manifest, is_akamai=True)
-        mapper.map(".mp4", lambda s: (s["bitrate"]+"k", HTTPStream(self.session, s["url"])))
+        mapper.map(".mp4", lambda s: (s["bitrate"] + "k", HTTPStream(self.session, s["url"])))
 
         for q, s in mapper(streams):
             yield q, s
@@ -88,7 +88,7 @@ class AdultSwim(Plugin):
             for epi in show_info[u"archiveEpisodes"]:
                 if epi[u"slug"] == episode:
                     stream_id = epi[u"id"]
-        elif show_info["isLive"] or not len(show_info[u"archiveEpisodes"]):
+        elif show_info.get("isLive") or not len(show_info[u"archiveEpisodes"]):
             self.logger.debug("Loading LIVE streams for: {0}", show)
             stream_id = show_info[u"stream"]
         else:  # off-air
@@ -99,7 +99,6 @@ class AdultSwim(Plugin):
             else:
                 self.logger.error("This stream is currently offline")
                 return
-
 
         if stream_id:
             api_url = self.API_URL.format(id=stream_id)

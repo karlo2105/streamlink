@@ -20,9 +20,7 @@
 
 # MPC-HC, must be at least version 1.7 to be used
 #player="C:\Program Files (x86)\MPC-HC\mpc-hc.exe"
-
-# MPlayer2
-#player=C:\mplayer2\mplayer2.exe -cache 4096
+#player="C:\Program Files\MPC-HC\mpc-hc64.exe"
 
 
 # Use this if you want to transport the stream to the player via a named pipe.

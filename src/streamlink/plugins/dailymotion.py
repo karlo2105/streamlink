@@ -1,8 +1,10 @@
+import json
 import re
 
 from functools import reduce
 
 from streamlink.compat import urlparse, range
+from streamlink.exceptions import NoStreamsError
 from streamlink.plugin import Plugin
 from streamlink.plugin.api import http, validate
 from streamlink.stream import HDSStream, HLSStream, HTTPStream, RTMPStream
@@ -22,7 +24,8 @@ QUALITY_MAP = {
     "auto": "hds",
     "source": "hds"
 }
-STREAM_INFO_URL = "http://www.dailymotion.com/sequence/full/{0}"
+STREAM_INFO_URL = "https://www.dailymotion.com/sequence/full/{0}"
+USER_INFO_URL = "https://api.dailymotion.com/user/{0}"
 
 _rtmp_re = re.compile(r"""
     (?P<host>rtmp://[^/]+)
@@ -32,9 +35,14 @@ _rtmp_re = re.compile(r"""
 _url_re = re.compile(r"""
     http(s)?://(\w+\.)?
     dailymotion.com
-    (/embed)?/(video|live)
-    /(?P<media_id>[^_?/]+)
+    (?:
+        (/embed)?/(video|live)
+        /(?P<media_id>[^_?/]+)
+    |
+        /(?P<channel_name>[A-Za-z0-9-_]+)
+    )
 """, re.VERBOSE)
+chromecast_re = re.compile(r'''stream_chromecast_url"\s*:\s*(?P<url>".*?")''')
 
 _media_inner_schema = validate.Schema([{
     "layerList": [{
@@ -45,7 +53,7 @@ _media_inner_schema = validate.Schema([{
                     "name": validate.text,
                     validate.optional("param"): dict
                 }],
-                validate.filter(lambda l: l["name"] in ("video", "reporting"))
+                validate.filter(lambda l: l["name"] in ("video", "reporting", "message"))
             )
         }]
     }]
@@ -71,6 +79,15 @@ _vod_manifest_schema = validate.Schema({
         validate.optional("failover"): [validate.text]
     }]
 })
+_live_id_schema = validate.Schema(
+    {
+        "total": int,
+        "list": validate.any(
+            [],
+            [{"id": validate.text}]
+        )
+    }
+)
 
 
 class DailyMotion(Plugin):
@@ -82,7 +99,7 @@ class DailyMotion(Plugin):
         res = http.get(STREAM_INFO_URL.format(media_id), cookies=COOKIES)
         media = http.json(res, schema=_media_schema)
 
-        params = extra_params = swf_url = None
+        params = extra_params = swf_url = message = None
         for __ in media:
             for __ in __["layerList"]:
                 for __ in __.get("sequenceList", []):
@@ -93,9 +110,12 @@ class DailyMotion(Plugin):
                         elif name == "reporting":
                             extra_params = layer.get("param", {})
                             extra_params = extra_params.get("extraParams", {})
+                        elif name == "message":
+                            message = layer.get("param")
 
         if not params:
-            return
+            self.logger.error(message.get("title"))
+            return []
 
         if extra_params:
             swf_url = extra_params.get("videoSwfURL")
@@ -120,7 +140,12 @@ class DailyMotion(Plugin):
                 continue
 
             if quality == "hds":
-                streams = HDSStream.parse_manifest(self.session, res.url)
+                self.logger.debug('PLAYLIST URL: {0}'.format(res.url))
+                try:
+                    streams = HDSStream.parse_manifest(self.session, res.url)
+                except BaseException:
+                    streams = HLSStream.parse_variant_playlist(self.session, res.url)
+
                 for name, stream in streams.items():
                     if key == "source":
                         name += "+"
@@ -191,11 +216,51 @@ class DailyMotion(Plugin):
                     stream = self._create_flv_playlist(failover)
                     yield name, stream
 
+    def _chrome_cast_stream_fallback(self):
+        self.logger.debug("Trying to find Chromecast URL as a fallback")
+        # get the page if not already available
+        page = http.get(self.url, cookies=COOKIES)
+        m = chromecast_re.search(page.text)
+        if m:
+            url = json.loads(m.group("url"))
+            return HLSStream.parse_variant_playlist(self.session, url)
+
+    def get_live_id(self, username):
+        """Get the livestream videoid from a username.
+           https://developer.dailymotion.com/tools/apiexplorer#/user/videos/list
+        """
+        params = {
+            "flags": "live_onair"
+        }
+        api_user_videos = USER_INFO_URL.format(username) + "/videos"
+        try:
+            res = http.get(api_user_videos.format(username),
+                           params=params)
+        except Exception as e:
+            self.logger.error("invalid username")
+            raise NoStreamsError(self.url)
+
+        data = http.json(res, schema=_live_id_schema)
+        if data["total"] > 0:
+            media_id = data["list"][0]["id"]
+            return media_id
+        return False
+
     def _get_streams(self):
         match = _url_re.match(self.url)
         media_id = match.group("media_id")
+        username = match.group("channel_name")
 
-        return self._get_streams_from_media(media_id)
+        if not media_id and username:
+            media_id = self.get_live_id(username)
+
+        if media_id:
+            self.logger.debug("Found media ID: {0}", media_id)
+            streams = list(self._get_streams_from_media(media_id))
+            if streams:
+                return streams
+
+        return self._chrome_cast_stream_fallback()
 
 
 __plugin__ = DailyMotion
